@@ -12,22 +12,21 @@ AudioEngine::AudioEngine() {
 
     AURenderCallbackStruct cb;
     cb.inputProc = RenderCallback;
-    cb.inputProcRefCon = &osc; // Pass the oscillator directly
+    cb.inputProcRefCon = &synth; // Pass the synth engine
     AudioUnitSetProperty(audioUnit, kAudioUnitProperty_SetRenderCallback, 
                          kAudioUnitScope_Input, 0, &cb, sizeof(cb));
+    
+    synth.setSampleRate(44100.0);
 }
 
 OSStatus AudioEngine::RenderCallback(void *inRefCon, AudioUnitRenderActionFlags*, 
     const AudioTimeStamp*, UInt32, UInt32 nFrames, AudioBufferList *ioData) {
     
-    Oscillator* osc = (Oscillator*)inRefCon;
+    SynthEngine* synth = (SynthEngine*)inRefCon;
     Float32 *outL = (Float32 *)ioData->mBuffers[0].mData;
     Float32 *outR = (Float32 *)ioData->mBuffers[1].mData;
 
-    for (UInt32 i = 0; i < nFrames; ++i) {
-        float s = osc->getNextSample();
-        outL[i] = outR[i] = s;
-    }
+    synth->render(outL, outR, nFrames);
     return noErr;
 }
 

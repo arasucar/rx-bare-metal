@@ -1,6 +1,6 @@
 #pragma once
 #include <AudioToolbox/AudioToolbox.h>
-#include "Oscillator.hpp"
+#include "SynthEngine.hpp"
 
 class AudioEngine {
 public:
@@ -8,10 +8,12 @@ public:
     ~AudioEngine();
     bool start();
     void stop();
+    
+    SynthEngine& getSynth() { return synth; }
 
 private:
     AudioComponentInstance audioUnit;
-    Oscillator osc;
+    SynthEngine synth;
     
     static OSStatus RenderCallback(void *inRefCon, 
                                  AudioUnitRenderActionFlags *ioActionFlags,
