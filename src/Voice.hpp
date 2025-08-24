@@ -1,5 +1,6 @@
 #pragma once
 #include "Oscillator.hpp"
+#include "Envelope.hpp"
 
 class Voice {
 public:
@@ -16,7 +17,7 @@ public:
 
 private:
     Oscillator osc;
-    bool active = false;
+    Envelope env;
     int noteNumber = -1;
     float velocity = 0.0f;
     

@@ -3,22 +3,22 @@
 
 void Voice::setSampleRate(double sr) {
     osc.setSampleRate(sr);
+    env.setSampleRate(sr);
 }
 
 void Voice::noteOn(int note, int vel) {
     noteNumber = note;
     velocity = vel / 127.0f;
     osc.setFrequency(mtof(note));
-    active = true;
+    env.enterStage(EnvelopeStage::Attack);
 }
 
 void Voice::noteOff() {
-    active = false;
-    // noteNumber = -1; // Keep last note for release phase in future
+    env.enterStage(EnvelopeStage::Release);
 }
 
 bool Voice::isActive() const {
-    return active;
+    return env.isActive();
 }
 
 int Voice::getNoteNumber() const {
@@ -26,8 +26,8 @@ int Voice::getNoteNumber() const {
 }
 
 float Voice::render() {
-    if (!active) return 0.0f;
-    return osc.getNextSample() * velocity;
+    if (!env.isActive()) return 0.0f;
+    return osc.getNextSample() * velocity * env.getNextLevel();
 }
 
 double Voice::mtof(int note) {
