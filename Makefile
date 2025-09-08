@@ -1,8 +1,8 @@
 CXX = clang++
 CXXFLAGS = -std=c++17 -Wall -I./src
-LDFLAGS = -framework AudioToolbox -framework CoreAudio -framework CoreFoundation
+LDFLAGS = -framework AudioToolbox -framework CoreAudio -framework CoreFoundation -framework CoreMIDI
 
-SRC = src/main.cpp src/AudioEngine.cpp src/Oscillator.cpp src/Voice.cpp src/SynthEngine.cpp src/Envelope.cpp
+SRC = src/main.cpp src/AudioEngine.cpp src/Oscillator.cpp src/Voice.cpp src/SynthEngine.cpp src/Envelope.cpp src/Filter.cpp src/MidiManager.cpp
 OBJ = $(SRC:.cpp=.o)
 TARGET = build/BareMetalSynth
 

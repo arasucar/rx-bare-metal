@@ -4,6 +4,7 @@
 void Voice::setSampleRate(double sr) {
     osc.setSampleRate(sr);
     env.setSampleRate(sr);
+    filter.setSampleRate(sr);
 }
 
 void Voice::noteOn(int note, int vel) {
@@ -11,6 +12,10 @@ void Voice::noteOn(int note, int vel) {
     velocity = vel / 127.0f;
     osc.setFrequency(mtof(note));
     env.enterStage(EnvelopeStage::Attack);
+    
+    // Basic Filter Setup (Static for now)
+    filter.setCutoff(2000.0f); // 2kHz Low Pass
+    filter.setResonance(0.3f);
 }
 
 void Voice::noteOff() {
@@ -27,7 +32,9 @@ int Voice::getNoteNumber() const {
 
 float Voice::render() {
     if (!env.isActive()) return 0.0f;
-    return osc.getNextSample() * velocity * env.getNextLevel();
+    float raw = osc.getNextSample();
+    float filtered = filter.process(raw);
+    return filtered * velocity * env.getNextLevel();
 }
 
 double Voice::mtof(int note) {

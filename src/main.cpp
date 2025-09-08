@@ -1,24 +1,20 @@
 #include <iostream>
 #include "AudioEngine.hpp"
+#include "MidiManager.hpp"
 
 int main() {
     AudioEngine engine;
+    MidiManager midi(engine.getSynth());
+
     if (engine.start()) {
-        std::cout << "Synth active. Playing C Major chord..." << std::endl;
-        
-        // Trigger a chord to test polyphony and envelope
-        engine.getSynth().noteOn(60, 100); // C4
-        engine.getSynth().noteOn(64, 100); // E4
-        engine.getSynth().noteOn(67, 100); // G4
-        
-        std::cout << "Press Enter to release the notes (hear the release tail)..." << std::endl;
-        std::cin.get();
+        if (midi.initialize()) {
+            std::cout << "Synth active and MIDI initialized." << std::endl;
+            std::cout << "Connect a MIDI keyboard or use a virtual MIDI bus to play." << std::endl;
+        } else {
+            std::cout << "Synth active but MIDI failed to initialize." << std::endl;
+        }
 
-        engine.getSynth().noteOff(60);
-        engine.getSynth().noteOff(64);
-        engine.getSynth().noteOff(67);
-
-        std::cout << "Notes released. Press Enter again to stop the engine..." << std::endl;
+        std::cout << "Press Enter to stop..." << std::endl;
         std::cin.get();
         
         engine.stop();
