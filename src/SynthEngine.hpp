@@ -13,6 +13,12 @@ public:
     
     // Audio processing
     void render(float* outL, float* outR, int numFrames);
+    
+    // Parameters
+    void setFilterCutoff(float cutoff);
+    void setFilterResonance(float res);
+    void setEnvelopeParams(float a, float d, float s, float r);
+    void setWaveform(int waveformIndex); // 0=Sine, 1=Tri, 2=Saw, 3=Square
 
 private:
     static const int MAX_VOICES = 8;

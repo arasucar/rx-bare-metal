@@ -13,6 +13,12 @@ public:
     bool isActive() const;
     int getNoteNumber() const;
     
+    // Parameters
+    void setFilterCutoff(float cutoff) { filter.setCutoff(cutoff); }
+    void setFilterResonance(float res) { filter.setResonance(res); }
+    void setEnvelopeParams(float a, float d, float s, float r) { env.setParameters(a, d, s, r); }
+    void setWaveform(Waveform w) { osc.setWaveform(w); }
+
     // Process one sample
     float render();
 

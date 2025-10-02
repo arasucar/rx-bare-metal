@@ -58,3 +58,25 @@ void SynthEngine::render(float* outL, float* outR, int numFrames) {
         outR[i] *= 0.2f;
     }
 }
+
+void SynthEngine::setFilterCutoff(float cutoff) {
+    for (int i = 0; i < MAX_VOICES; ++i) voices[i].setFilterCutoff(cutoff);
+}
+
+void SynthEngine::setFilterResonance(float res) {
+    for (int i = 0; i < MAX_VOICES; ++i) voices[i].setFilterResonance(res);
+}
+
+void SynthEngine::setEnvelopeParams(float a, float d, float s, float r) {
+    for (int i = 0; i < MAX_VOICES; ++i) voices[i].setEnvelopeParams(a, d, s, r);
+}
+
+void SynthEngine::setWaveform(int waveformIndex) {
+    Waveform w = Waveform::Saw;
+    if (waveformIndex == 0) w = Waveform::Sine;
+    else if (waveformIndex == 1) w = Waveform::Triangle;
+    else if (waveformIndex == 2) w = Waveform::Saw;
+    else if (waveformIndex == 3) w = Waveform::Square;
+    
+    for (int i = 0; i < MAX_VOICES; ++i) voices[i].setWaveform(w);
+}
