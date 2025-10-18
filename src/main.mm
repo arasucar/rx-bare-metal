@@ -22,6 +22,9 @@ float p_sustain = 0.7f;
 float p_release = 0.5f;
 int p_waveform = 2; // Saw
 
+// Scope Data
+std::vector<float> scopeData(512, 0.0f);
+
 @interface AppViewController : NSViewController <MTKViewDelegate>
 @property (nonatomic, strong) MTKView *mtkView;
 @property (nonatomic, strong) id <MTLDevice> device;
@@ -63,7 +66,7 @@ int p_waveform = 2; // Saw
     // UI Logic
     // ---------------------------------------------------------
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(350, 250), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
     
     ImGui::Begin("Rx Bare Metal Synth");
     
@@ -92,6 +95,16 @@ int p_waveform = 2; // Saw
     if (envChanged) {
         g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
     }
+
+    ImGui::Separator();
+    ImGui::Text("Oscilloscope");
+    
+    // Fetch latest audio data
+    if (g_AudioEngine) {
+        g_AudioEngine->getScopeBuffer().getSnapshot(scopeData, scopeData.size());
+    }
+    
+    ImGui::PlotLines("##Scope", scopeData.data(), (int)scopeData.size(), 0, NULL, -1.0f, 1.0f, ImVec2(0, 100));
 
     ImGui::Separator();
     ImGui::Text("Application Average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
