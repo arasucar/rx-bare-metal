@@ -26,6 +26,9 @@ OSStatus AudioEngine::RenderCallback(void *inRefCon, AudioUnitRenderActionFlags*
     Float32 *outL = (Float32 *)ioData->mBuffers[0].mData;
     Float32 *outR = (Float32 *)ioData->mBuffers[1].mData;
 
+    // Safety check
+    if (!outL || !outR) return noErr;
+
     engine->synth.render(outL, outR, nFrames);
     
     // Send Left channel to visualizer

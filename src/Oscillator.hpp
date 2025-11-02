@@ -16,8 +16,11 @@ public:
     float getNextSample();
 
 private:
+    double polyBLEP(double t);
+    
     double phase = 0.0;
     double frequency = 440.0;
     double sampleRate = 44100.0;
+    double phaseIncrement = 0.0;
     Waveform waveform = Waveform::Saw; // Default to Saw for richer sound
 };
