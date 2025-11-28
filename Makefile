@@ -8,7 +8,7 @@ IMGUI_SRC = $(IMGUI_DIR)/imgui.cpp $(IMGUI_DIR)/imgui_draw.cpp $(IMGUI_DIR)/imgu
 IMGUI_BACKENDS = $(IMGUI_DIR)/backends/imgui_impl_osx.mm $(IMGUI_DIR)/backends/imgui_impl_metal.mm
 
 # Project Sources
-SRC = src/main.mm src/AudioEngine.cpp src/Oscillator.cpp src/Voice.cpp src/SynthEngine.cpp src/Envelope.cpp src/Filter.cpp src/MidiManager.cpp
+SRC = src/main.mm src/AudioEngine.cpp src/Oscillator.cpp src/Voice.cpp src/SynthEngine.cpp src/Envelope.cpp src/Filter.cpp src/MidiManager.cpp src/PresetManager.cpp
 OBJ = $(SRC:.cpp=.o)
 OBJ := $(OBJ:.mm=.o)
 OBJ += $(IMGUI_SRC:.cpp=.o) $(IMGUI_BACKENDS:.mm=.o)
@@ -28,4 +28,8 @@ $(TARGET): $(OBJ)
 	$(CXX) $(CXXFLAGS) -x objective-c++ -c $< -o $@
 
 clean:
-	rm -f src/*.o $(IMGUI_DIR)/*.o $(IMGUI_DIR)/backends/*.o $(TARGET)
+	rm -f src/*.o vendor/imgui/*.o vendor/imgui/backends/*.o $(TARGET) test_runner
+
+test: src/Oscillator.o src/Envelope.o src/Filter.o
+	$(CXX) $(CXXFLAGS) tests/TestRunner.cpp src/Oscillator.o src/Envelope.o src/Filter.o -o test_runner
+	./test_runner

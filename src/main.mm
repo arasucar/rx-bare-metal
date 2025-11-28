@@ -7,6 +7,7 @@
 
 #include "AudioEngine.hpp"
 #include "MidiManager.hpp"
+#include "PresetManager.hpp"
 #include <vector>
 
 // Global Audio/Synth State
@@ -22,8 +23,27 @@ float p_sustain = 0.7f;
 float p_release = 0.5f;
 int p_waveform = 2; // Saw
 
+// Preset UI State
+int selectedPreset = 0;
+char presetNameBuf[128] = "MyPreset";
+
 // Scope Data
 std::vector<float> scopeData(512, 0.0f);
+
+void ApplyPreset(const Preset& p) {
+    p_cutoff = p.cutoff;
+    p_resonance = p.resonance;
+    p_attack = p.attack;
+    p_decay = p.decay;
+    p_sustain = p.sustain;
+    p_release = p.release;
+    p_waveform = p.waveform;
+    
+    g_AudioEngine->getSynth().setFilterCutoff(p_cutoff);
+    g_AudioEngine->getSynth().setFilterResonance(p_resonance);
+    g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
+    g_AudioEngine->getSynth().setWaveform(p_waveform);
+}
 
 @interface AppViewController : NSViewController <MTKViewDelegate>
 @property (nonatomic, strong) MTKView *mtkView;
@@ -66,9 +86,39 @@ std::vector<float> scopeData(512, 0.0f);
     // UI Logic
     // ---------------------------------------------------------
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(400, 400), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(400, 500), ImGuiCond_FirstUseEver);
     
     ImGui::Begin("Rx Bare Metal Synth");
+    
+    // Presets Section
+    if (ImGui::CollapsingHeader("Presets", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::BeginCombo("Factory Presets", PresetManager::getFactoryPresetName(selectedPreset))) {
+            for (int i = 0; i < PresetManager::getFactoryPresetCount(); i++) {
+                bool isSelected = (selectedPreset == i);
+                if (ImGui::Selectable(PresetManager::getFactoryPresetName(i), isSelected)) {
+                    selectedPreset = i;
+                    ApplyPreset(PresetManager::getFactoryPreset(i));
+                }
+                if (isSelected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        
+        ImGui::InputText("Filename", presetNameBuf, IM_ARRAYSIZE(presetNameBuf));
+        if (ImGui::Button("Save Preset")) {
+            Preset p = { presetNameBuf, p_cutoff, p_resonance, p_attack, p_decay, p_sustain, p_release, p_waveform };
+            PresetManager::savePreset(std::string(presetNameBuf) + ".txt", p);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load Preset")) {
+            Preset p;
+            if (PresetManager::loadPreset(std::string(presetNameBuf) + ".txt", p)) {
+                ApplyPreset(p);
+            }
+        }
+    }
+    
+    ImGui::Separator();
     
     ImGui::Text("Oscillators");
     const char* items[] = { "Sine", "Triangle", "Saw", "Square" };
