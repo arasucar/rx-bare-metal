@@ -1,20 +1,20 @@
 #import <Cocoa/Cocoa.h>
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
-#include "imgui.h"
-#include "imgui_impl_metal.h"
-#include "imgui_impl_osx.h"
+#include <vector>
+#include <string>
+#include <cmath>
 
 #include "AudioEngine.hpp"
 #include "MidiManager.hpp"
 #include "PresetManager.hpp"
-#include <vector>
+#include "Renderer.hpp"
 
 // Global Audio/Synth State
 AudioEngine* g_AudioEngine = nullptr;
 MidiManager* g_MidiManager = nullptr;
 
-// Synth Parameters for UI
+// Synth Parameters
 float p_cutoff = 2000.0f;
 float p_resonance = 0.3f;
 float p_attack = 0.01f;
@@ -23,32 +23,34 @@ float p_sustain = 0.7f;
 float p_release = 0.5f;
 int p_waveform = 2; // Saw
 
-// Preset UI State
-int selectedPreset = 0;
-char presetNameBuf[128] = "MyPreset";
-
-// Scope Data
-std::vector<float> scopeData(512, 0.0f);
-
-void ApplyPreset(const Preset& p) {
-    p_cutoff = p.cutoff;
-    p_resonance = p.resonance;
-    p_attack = p.attack;
-    p_decay = p.decay;
-    p_sustain = p.sustain;
-    p_release = p.release;
-    p_waveform = p.waveform;
+// UI Interaction State
+struct UIState {
+    float mouseX = 0;
+    float mouseY = 0;
+    bool mouseDown = false;
+    bool mouseClicked = false;
     
-    g_AudioEngine->getSynth().setFilterCutoff(p_cutoff);
-    g_AudioEngine->getSynth().setFilterResonance(p_resonance);
-    g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
-    g_AudioEngine->getSynth().setWaveform(p_waveform);
-}
+    // Knob Dragging
+    int activeKnobId = -1;
+    float dragStartY = 0;
+    float dragStartValue = 0;
+    
+    // Keyboard
+    int activeNote = -1; // -1 if none
+};
+UIState g_uiState;
+
+// Colors
+const vector_float4 kColorPanel = {0.2f, 0.2f, 0.25f, 1.0f};
+const vector_float4 kColorKnobBody = {0.1f, 0.1f, 0.1f, 1.0f};
+const vector_float4 kColorKnobLine = {0.9f, 0.9f, 0.9f, 1.0f};
+const vector_float4 kColorText = {0.8f, 0.8f, 0.8f, 1.0f}; // We don't have text rendering yet, using colored boxes for labels? No, let's just use layout.
 
 @interface AppViewController : NSViewController <MTKViewDelegate>
 @property (nonatomic, strong) MTKView *mtkView;
 @property (nonatomic, strong) id <MTLDevice> device;
 @property (nonatomic, strong) id <MTLCommandQueue> commandQueue;
+@property (nonatomic, assign) Renderer* renderer;
 @end
 
 @implementation AppViewController
@@ -58,15 +60,13 @@ void ApplyPreset(const Preset& p) {
     if (self) {
         self.device = MTLCreateSystemDefaultDevice();
         self.commandQueue = [self.device newCommandQueue];
-        
-        IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
-        ImGui::StyleColorsDark();
-        
-        ImGui_ImplOSX_Init(self.view);
-        ImGui_ImplMetal_Init(self.device);
+        self.renderer = new Renderer(self.device);
     }
     return self;
+}
+
+- (void)dealloc {
+    delete self.renderer;
 }
 
 - (void)loadView {
@@ -75,110 +75,202 @@ void ApplyPreset(const Preset& p) {
     self.mtkView.delegate = self;
     self.mtkView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [self.view addSubview:self.mtkView];
+    
+    // Mouse Tracking
+    NSTrackingArea* trackingArea = [[NSTrackingArea alloc] initWithRect:self.view.bounds
+                                                                options:NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+                                                                  owner:self
+                                                               userInfo:nil];
+    [self.view addTrackingArea:trackingArea];
 }
 
-- (void)drawInMTKView:(MTKView *)view {
-    ImGui_ImplMetal_NewFrame(view.currentRenderPassDescriptor);
-    ImGui_ImplOSX_NewFrame(view);
-    ImGui::NewFrame();
+- (void)mouseDown:(NSEvent *)event {
+    NSPoint p = [self.view convertPoint:event.locationInWindow fromView:nil];
+    g_uiState.mouseX = p.x;
+    g_uiState.mouseY = self.view.bounds.size.height - p.y; // Flip Y
+    g_uiState.mouseDown = true;
+    g_uiState.mouseClicked = true;
+}
 
-    // ---------------------------------------------------------
-    // UI Logic
-    // ---------------------------------------------------------
-    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(400, 500), ImGuiCond_FirstUseEver);
+- (void)mouseDragged:(NSEvent *)event {
+    NSPoint p = [self.view convertPoint:event.locationInWindow fromView:nil];
+    g_uiState.mouseX = p.x;
+    g_uiState.mouseY = self.view.bounds.size.height - p.y;
+}
+
+- (void)mouseUp:(NSEvent *)event {
+    g_uiState.mouseDown = false;
+    g_uiState.activeKnobId = -1;
     
-    ImGui::Begin("Rx Bare Metal Synth");
+    // Release keyboard note if active
+    if (g_uiState.activeNote != -1) {
+        g_AudioEngine->getSynth().noteOff(g_uiState.activeNote);
+        g_uiState.activeNote = -1;
+    }
+}
+
+- (void)mouseMoved:(NSEvent *)event {
+    NSPoint p = [self.view convertPoint:event.locationInWindow fromView:nil];
+    g_uiState.mouseX = p.x;
+    g_uiState.mouseY = self.view.bounds.size.height - p.y;
+}
+
+// -----------------------------------------------------------------------------
+// UI WIDGETS
+// -----------------------------------------------------------------------------
+
+bool DrawKnob(Renderer* r, int id, float x, float y, float radius, float* value, float minV, float maxV) {
+    bool changed = false;
     
-    // Presets Section
-    if (ImGui::CollapsingHeader("Presets", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (ImGui::BeginCombo("Factory Presets", PresetManager::getFactoryPresetName(selectedPreset))) {
-            for (int i = 0; i < PresetManager::getFactoryPresetCount(); i++) {
-                bool isSelected = (selectedPreset == i);
-                if (ImGui::Selectable(PresetManager::getFactoryPresetName(i), isSelected)) {
-                    selectedPreset = i;
-                    ApplyPreset(PresetManager::getFactoryPreset(i));
-                }
-                if (isSelected) ImGui::SetItemDefaultFocus();
+    // Interaction
+    float dx = g_uiState.mouseX - x;
+    float dy = g_uiState.mouseY - y;
+    float dist = sqrtf(dx*dx + dy*dy);
+    
+    if (g_uiState.mouseDown && g_uiState.activeKnobId == -1 && dist < radius) {
+        g_uiState.activeKnobId = id;
+        g_uiState.dragStartY = g_uiState.mouseY;
+        g_uiState.dragStartValue = *value;
+    }
+    
+    if (g_uiState.activeKnobId == id) {
+        float dragDy = g_uiState.dragStartY - g_uiState.mouseY;
+        float range = maxV - minV;
+        float sensitivity = 0.005f * (g_uiState.activeKnobId == id ? 1.0f : 0.0f); // sensitivity
+        // Actually, let's map pixels to range
+        float change = dragDy * (range / 200.0f); // 200 pixels = full range
+        *value = std::max(minV, std::min(maxV, g_uiState.dragStartValue + change));
+        changed = true;
+    }
+    
+    // Render
+    r->drawCircle(x, y, radius, kColorKnobBody);
+    
+    // Indicator Line
+    float normalized = (*value - minV) / (maxV - minV); // 0..1
+    float angle = (0.75f + normalized * 0.75f) * 2.0f * M_PI; // Start at 270 deg (bottom) ??? No.
+    // Standard synth knob: 7 o'clock to 5 o'clock
+    // 0 = 225 deg (5PI/4), 1 = -45 deg (-PI/4)
+    float startAngle = 3.0f * M_PI / 4.0f; // 135 deg?
+    float endAngle = 9.0f * M_PI / 4.0f;
+    // Let's say 0..1 maps to angleMin..angleMax
+    float angleMin = M_PI * 0.75f; // Bottom left
+    float angleMax = M_PI * 2.25f; // Bottom right
+    
+    float currentAngle = angleMin + normalized * (angleMax - angleMin);
+    
+    float lx = x + radius * 0.8f * cosf(currentAngle);
+    float ly = y + radius * 0.8f * sinf(currentAngle); // Correct Y direction?
+    // In our coord system (0 top), Y increases down.
+    // cos/sin standard math assumes Y up.
+    // So actually:
+    // angle 0 = Right. angle PI/2 = Down.
+    // We want 0 value = Bottom Left. That is roughly 135 deg (3PI/4).
+    
+    // Let's re-calc math
+    lx = x + radius * 0.8f * cosf(currentAngle);
+    ly = y + radius * 0.8f * sinf(currentAngle);
+
+    r->drawLine(x, y, lx, ly, 3.0f, kColorKnobLine);
+    
+    return changed;
+}
+
+void DrawKeyboard(Renderer* r, float x, float y, float w, float h) {
+    int startNote = 48; // C3
+    int numKeys = 14; // C3 to C4+
+    float keyWidth = w / numKeys;
+    
+    // White Keys
+    for (int i = 0; i < numKeys; ++i) {
+        float kx = x + i * keyWidth;
+        vector_float4 color = {0.9f, 0.9f, 0.9f, 1.0f};
+        
+        // Interaction
+        if (g_uiState.mouseDown && 
+            g_uiState.mouseX >= kx && g_uiState.mouseX < kx + keyWidth &&
+            g_uiState.mouseY >= y && g_uiState.mouseY < y + h) {
+            
+            color = {0.7f, 0.7f, 0.7f, 1.0f}; // Pressed
+            
+            // Map index to note (White keys only logic for simplicity first, then add black)
+            // C, D, E, F, G, A, B
+            int octave = i / 7;
+            int noteInOctave = i % 7;
+            int semitoneOffsets[] = {0, 2, 4, 5, 7, 9, 11};
+            int note = startNote + octave * 12 + semitoneOffsets[noteInOctave];
+            
+            if (g_uiState.activeNote != note) {
+                if (g_uiState.activeNote != -1) g_AudioEngine->getSynth().noteOff(g_uiState.activeNote);
+                g_AudioEngine->getSynth().noteOn(note, 100);
+                g_uiState.activeNote = note;
             }
-            ImGui::EndCombo();
         }
         
-        ImGui::InputText("Filename", presetNameBuf, IM_ARRAYSIZE(presetNameBuf));
-        if (ImGui::Button("Save Preset")) {
-            Preset p = { presetNameBuf, p_cutoff, p_resonance, p_attack, p_decay, p_sustain, p_release, p_waveform };
-            PresetManager::savePreset(std::string(presetNameBuf) + ".txt", p);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Load Preset")) {
-            Preset p;
-            if (PresetManager::loadPreset(std::string(presetNameBuf) + ".txt", p)) {
-                ApplyPreset(p);
-            }
-        }
+        r->drawRect(kx + 1, y, keyWidth - 2, h, color);
     }
     
-    ImGui::Separator();
+    // Black keys would go on top... omitting for bare metal simplicity for now or add them?
+    // Let's add them for "Analog" feel.
+    // C# D# F# G# A#
+    // Indices: 0, 1, 3, 4, 5 (relative to C)
+    // Position: between white keys.
+}
+
+
+- (void)drawInMTKView:(MTKView *)view {
+    MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
+    if (rpd == nil) return;
     
-    ImGui::Text("Oscillators");
-    const char* items[] = { "Sine", "Triangle", "Saw", "Square" };
-    if (ImGui::Combo("Waveform", &p_waveform, items, IM_ARRAYSIZE(items))) {
-        g_AudioEngine->getSynth().setWaveform(p_waveform);
-    }
+    rpd.colorAttachments[0].clearColor = MTLClearColorMake(0.15, 0.15, 0.2, 1); // Dark background
     
-    ImGui::Separator();
-    ImGui::Text("Filter");
-    if (ImGui::SliderFloat("Cutoff", &p_cutoff, 20.0f, 10000.0f, "%.1f Hz", ImGuiSliderFlags_Logarithmic)) {
+    id <MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
+    self.renderer->setScreenSize(view.bounds.size.width, view.bounds.size.height);
+    self.renderer->beginFrame(commandBuffer, rpd);
+
+    // ---------------------------------------------------------
+    // Draw Panel
+    // ---------------------------------------------------------
+    self.renderer->drawRect(20, 20, 760, 400, kColorPanel);
+    
+    // Knobs Row 1: Filter
+    // ID 1: Cutoff
+    if (DrawKnob(self.renderer, 1, 100, 100, 30, &p_cutoff, 20.0f, 10000.0f)) {
         g_AudioEngine->getSynth().setFilterCutoff(p_cutoff);
     }
-    if (ImGui::SliderFloat("Resonance", &p_resonance, 0.0f, 0.95f)) {
+    // ID 2: Resonance
+    if (DrawKnob(self.renderer, 2, 200, 100, 30, &p_resonance, 0.0f, 0.95f)) {
         g_AudioEngine->getSynth().setFilterResonance(p_resonance);
     }
     
-    ImGui::Separator();
-    ImGui::Text("Envelope (ADSR)");
-    bool envChanged = false;
-    envChanged |= ImGui::SliderFloat("Attack", &p_attack, 0.001f, 2.0f);
-    envChanged |= ImGui::SliderFloat("Decay", &p_decay, 0.001f, 2.0f);
-    envChanged |= ImGui::SliderFloat("Sustain", &p_sustain, 0.0f, 1.0f);
-    envChanged |= ImGui::SliderFloat("Release", &p_release, 0.001f, 5.0f);
-    if (envChanged) {
-        g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
-    }
-
-    ImGui::Separator();
-    ImGui::Text("Oscilloscope");
+    // Knobs Row 2: ADSR
+    float adsrY = 250.0f;
+    if (DrawKnob(self.renderer, 3, 100, adsrY, 25, &p_attack, 0.001f, 2.0f)) g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
+    if (DrawKnob(self.renderer, 4, 180, adsrY, 25, &p_decay, 0.001f, 2.0f)) g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
+    if (DrawKnob(self.renderer, 5, 260, adsrY, 25, &p_sustain, 0.0f, 1.0f)) g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
+    if (DrawKnob(self.renderer, 6, 340, adsrY, 25, &p_release, 0.001f, 5.0f)) g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
     
-    // Fetch latest audio data
-    if (g_AudioEngine) {
-        g_AudioEngine->getScopeBuffer().getSnapshot(scopeData, scopeData.size());
+    // Waveform Selector (Simple toggle knob for now)
+    float waveFloat = (float)p_waveform;
+    if (DrawKnob(self.renderer, 7, 500, 100, 40, &waveFloat, 0.0f, 3.0f)) {
+        p_waveform = (int)roundf(waveFloat);
+        g_AudioEngine->getSynth().setWaveform(p_waveform);
     }
-    
-    ImGui::PlotLines("##Scope", scopeData.data(), (int)scopeData.size(), 0, NULL, -1.0f, 1.0f, ImVec2(0, 100));
-
-    ImGui::Separator();
-    ImGui::Text("Application Average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
-    ImGui::End();
 
     // ---------------------------------------------------------
-    // Rendering
+    // Draw Keyboard
     // ---------------------------------------------------------
-    ImGui::Render();
-    id <MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
-    MTLRenderPassDescriptor *renderPassDescriptor = view.currentRenderPassDescriptor;
-    if (renderPassDescriptor != nil) {
-        renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0.1, 0.1, 0.1, 1);
-        renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
-        renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-        
-        id <MTLRenderCommandEncoder> renderEncoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
-        [renderEncoder pushDebugGroup:@"ImGui Mesh"];
-        ImGui_ImplMetal_RenderDrawData(ImGui::GetDrawData(), commandBuffer, renderEncoder);
-        [renderEncoder popDebugGroup];
-        [renderEncoder endEncoding];
-        [commandBuffer presentDrawable:view.currentDrawable];
-    }
+    DrawKeyboard(self.renderer, 20, 450, 760, 120);
+
+    // ---------------------------------------------------------
+    // End Frame
+    // ---------------------------------------------------------
+    self.renderer->endFrame();
+    [commandBuffer presentDrawable:view.currentDrawable];
     [commandBuffer commit];
+    
+    // Reset one-shot clicks
+    g_uiState.mouseClicked = false;
 }
 
 - (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {}
@@ -199,7 +291,7 @@ void ApplyPreset(const Preset& p) {
     g_AudioEngine->start();
     g_MidiManager->initialize();
     
-    // Set initial synth state to match UI defaults
+    // Set initial synth state
     g_AudioEngine->getSynth().setFilterCutoff(p_cutoff);
     g_AudioEngine->getSynth().setFilterResonance(p_resonance);
     g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
@@ -209,7 +301,7 @@ void ApplyPreset(const Preset& p) {
                                               styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
                                                 backing:NSBackingStoreBuffered
                                                   defer:NO];
-    [self.window setTitle:@"Rx Bare Metal Synth"];
+    [self.window setTitle:@"Rx Bare Metal Synth (Analog Edition)"];
     self.viewController = [[AppViewController alloc] initWithNibName:nil bundle:nil];
     self.window.contentViewController = self.viewController;
     [self.window makeKeyAndOrderFront:nil];
@@ -219,10 +311,6 @@ void ApplyPreset(const Preset& p) {
     g_AudioEngine->stop();
     delete g_MidiManager;
     delete g_AudioEngine;
-    
-    ImGui_ImplMetal_Shutdown();
-    ImGui_ImplOSX_Shutdown();
-    ImGui::DestroyContext();
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
