@@ -1,7 +1,8 @@
 #pragma once
-#include <AudioToolbox/AudioToolbox.h>
+#include "miniaudio.h"
 #include "SynthEngine.hpp"
 #include "ScopeBuffer.hpp"
+#include "dsp/DspBuffer.hpp"
 
 class AudioEngine {
 public:
@@ -14,14 +15,10 @@ public:
     ScopeBuffer& getScopeBuffer() { return scopeBuffer; }
 
 private:
-    AudioComponentInstance audioUnit;
+    ma_device device;
     SynthEngine synth;
     ScopeBuffer scopeBuffer;
-    
-    static OSStatus RenderCallback(void *inRefCon, 
-                                 AudioUnitRenderActionFlags *ioActionFlags,
-                                 const AudioTimeStamp *inTimeStamp, 
-                                 UInt32 inBusNumber, 
-                                 UInt32 inNumberFrames, 
-                                 AudioBufferList *ioData);
+    DspBuffer internalBuffer; // Planar buffer for processing
+
+    static void dataCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount);
 };

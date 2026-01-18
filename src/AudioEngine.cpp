@@ -1,42 +1,55 @@
+#define MINIAUDIO_IMPLEMENTATION
 #include "AudioEngine.hpp"
+#include <iostream>
 
-AudioEngine::AudioEngine() {
-    AudioComponentDescription desc = {0};
-    desc.componentType = kAudioUnitType_Output;
-    desc.componentSubType = kAudioUnitSubType_DefaultOutput;
-    desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+AudioEngine::AudioEngine() : internalBuffer(2, 512) {
+    ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.playback.format   = ma_format_f32;
+    config.playback.channels = 2;
+    config.sampleRate        = 44100;
+    config.dataCallback      = dataCallback;
+    config.pUserData         = this;
 
-    AudioComponent comp = AudioComponentFindNext(NULL, &desc);
-    AudioComponentInstanceNew(comp, &audioUnit);
-    AudioUnitInitialize(audioUnit);
-
-    AURenderCallbackStruct cb;
-    cb.inputProc = RenderCallback;
-    cb.inputProcRefCon = this; // Pass the AudioEngine instance
-    AudioUnitSetProperty(audioUnit, kAudioUnitProperty_SetRenderCallback, 
-                         kAudioUnitScope_Input, 0, &cb, sizeof(cb));
+    if (ma_device_init(NULL, &config, &device) != MA_SUCCESS) {
+        std::cerr << "Failed to initialize miniaudio device." << std::endl;
+    }
     
     synth.setSampleRate(44100.0);
 }
 
-OSStatus AudioEngine::RenderCallback(void *inRefCon, AudioUnitRenderActionFlags*, 
-    const AudioTimeStamp*, UInt32, UInt32 nFrames, AudioBufferList *ioData) {
-    
-    AudioEngine* engine = (AudioEngine*)inRefCon;
-    Float32 *outL = (Float32 *)ioData->mBuffers[0].mData;
-    Float32 *outR = (Float32 *)ioData->mBuffers[1].mData;
-
-    // Safety check
-    if (!outL || !outR) return noErr;
-
-    engine->synth.render(outL, outR, nFrames);
-    
-    // Send Left channel to visualizer
-    engine->scopeBuffer.write(outL, nFrames);
-    
-    return noErr;
+AudioEngine::~AudioEngine() {
+    ma_device_uninit(&device);
 }
 
-bool AudioEngine::start() { return AudioOutputUnitStart(audioUnit) == noErr; }
-void AudioEngine::stop() { AudioOutputUnitStop(audioUnit); }
-AudioEngine::~AudioEngine() { AudioComponentInstanceDispose(audioUnit); }
+void AudioEngine::dataCallback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
+    AudioEngine* engine = (AudioEngine*)pDevice->pUserData;
+    
+    // Ensure our internal planar buffer matches the requested size
+    engine->internalBuffer.resize(2, frameCount);
+    engine->internalBuffer.clear();
+    
+    // Render from synth to planar buffer
+    engine->synth.render(engine->internalBuffer);
+    
+    // Convert planar to interleaved for miniaudio output
+    float* out = (float*)pOutput;
+    float* pL = engine->internalBuffer.getChannel(0);
+    float* pR = engine->internalBuffer.getChannel(1);
+    
+    if (pL && pR) {
+        for (ma_uint32 i = 0; i < frameCount; ++i) {
+            out[i*2] = pL[i];
+            out[i*2 + 1] = pR[i];
+        }
+        // Write to scope for visualization
+        engine->scopeBuffer.write(pL, frameCount);
+    }
+}
+
+bool AudioEngine::start() {
+    return ma_device_start(&device) == MA_SUCCESS;
+}
+
+void AudioEngine::stop() {
+    ma_device_stop(&device);
+}

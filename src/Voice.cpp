@@ -1,40 +1,47 @@
 #include "Voice.hpp"
 #include <cmath>
 
+Voice::Voice() {
+    graph.addNode(&oscNode);
+    graph.addNode(&filterNode);
+    graph.addNode(&envNode);
+}
+
 void Voice::setSampleRate(double sr) {
-    osc.setSampleRate(sr);
-    env.setSampleRate(sr);
-    filter.setSampleRate(sr);
+    graph.prepare(sr, 512); // Default block size
 }
 
 void Voice::noteOn(int note, int vel) {
     noteNumber = note;
     velocity = vel / 127.0f;
-    osc.setFrequency(mtof(note));
-    env.enterStage(EnvelopeStage::Attack);
-    
-    // Basic Filter Setup (Static for now)
-    filter.setCutoff(2000.0f); // 2kHz Low Pass
-    filter.setResonance(0.3f);
+    oscNode.setFrequency(mtof(note));
+    envNode.enterStage(EnvelopeStage::Attack);
 }
 
 void Voice::noteOff() {
-    env.enterStage(EnvelopeStage::Release);
+    envNode.enterStage(EnvelopeStage::Release);
 }
 
 bool Voice::isActive() const {
-    return env.isActive();
+    return envNode.isActive();
 }
 
 int Voice::getNoteNumber() const {
     return noteNumber;
 }
 
-float Voice::render() {
-    if (!env.isActive()) return 0.0f;
-    float raw = osc.getNextSample();
-    float filtered = filter.process(raw);
-    return filtered * velocity * env.getNextLevel();
+void Voice::render(DspBuffer& buffer) {
+    graph.process(buffer);
+    
+    // Apply velocity
+    int frames = buffer.getNumFrames();
+    int channels = buffer.getNumChannels();
+    for (int c = 0; c < channels; ++c) {
+        float* data = buffer.getChannel(c);
+        for (int i = 0; i < frames; ++i) {
+            data[i] *= velocity;
+        }
+    }
 }
 
 double Voice::mtof(int note) {

@@ -2,6 +2,8 @@
 #include "Voice.hpp"
 #include <vector>
 
+#include "dsp/DspBuffer.hpp"
+
 class SynthEngine {
 public:
     SynthEngine();
@@ -12,7 +14,7 @@ public:
     void noteOff(int noteNumber);
     
     // Audio processing
-    void render(float* outL, float* outR, int numFrames);
+    void render(DspBuffer& outputBuffer);
     
     // Parameters
     void setFilterCutoff(float cutoff);
