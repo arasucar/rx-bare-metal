@@ -296,14 +296,14 @@ void frame(void) {
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImVec2(width, height));
-    ImGui::Begin("BareMetalSynthLite", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    ImGui::Begin("BareMetalSynth", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
     // HEADER
     {
         ImGui::BeginChild("Header", ImVec2(width, 40), false);
         ImGui::SameLine(10);
         ImGui::TextColored(ImVec4(0, 0.8f, 1.0f, 1.0f), "BARE METAL SYNTH"); 
-        ImGui::SameLine(); ImGui::Text("LITE");
+        ImGui::SameLine(); ImGui::Text("Created by arasucar");
         
         ImGui::SameLine(width - 150);
         ImGui::SetNextItemWidth(100);
@@ -449,7 +449,7 @@ sapp_desc sokol_main(int argc, char* argv[]) {
     desc.event_cb = event;
     desc.width = 900;
     desc.height = 600;
-    desc.window_title = "Bare Metal Synth | Lite";
+    desc.window_title = "Bare Metal Synth";
     desc.icon.sokol_default = true;
     return desc;
 }
