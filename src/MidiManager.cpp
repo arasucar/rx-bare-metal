@@ -1,7 +1,8 @@
 #include "MidiManager.hpp"
 #include <iostream>
 
-MidiManager::MidiManager(SynthEngine& s) : synth(s), midiClient(0), inputPort(0) {}
+MidiManager::MidiManager(SynthEngine& synth) : synth(synth) {
+}
 
 MidiManager::~MidiManager() {
     if (inputPort) MIDIPortDispose(inputPort);

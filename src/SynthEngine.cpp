@@ -47,8 +47,8 @@ void SynthEngine::render(DspBuffer& outputBuffer) {
     float* outL = outputBuffer.getChannel(0);
     float* outR = outputBuffer.getChannel(1);
     for (int i = 0; i < numFrames; ++i) {
-        outL[i] *= 0.2f;
-        outR[i] *= 0.2f;
+        outL[i] *= masterVolume;
+        outR[i] *= masterVolume;
     }
 }
 

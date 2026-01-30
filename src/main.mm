@@ -1,331 +1,455 @@
-#import <Cocoa/Cocoa.h>
-#import <Metal/Metal.h>
-#import <MetalKit/MetalKit.h>
-#include <vector>
-#include <string>
-#include <cmath>
+#define SOKOL_IMPL
+#define SOKOL_METAL
+#include <sokol_app.h>
+#include <sokol_gfx.h>
+#include <sokol_glue.h>
+#include <imgui.h>
+#define SOKOL_IMGUI_IMPL
+#include "sokol_imgui.h"
 
 #include "AudioEngine.hpp"
 #include "MidiManager.hpp"
 #include "PresetManager.hpp"
-#include "Renderer.hpp"
+#include <iostream>
+#include <cmath>
+#include <vector>
+#include <string>
 
-// Global Audio/Synth State
-AudioEngine* g_AudioEngine = nullptr;
-MidiManager* g_MidiManager = nullptr;
+// Global State
+static struct {
+    sg_pass_action pass_action;
+} state;
 
-// Synth Parameters
-float p_cutoff = 2000.0f;
-float p_resonance = 0.3f;
-float p_attack = 0.01f;
-float p_decay = 0.1f;
-float p_sustain = 0.7f;
-float p_release = 0.5f;
-int p_waveform = 2; // Saw
+// Audio & Synth State
+std::shared_ptr<AudioEngine> g_audioEngine;
+std::shared_ptr<MidiManager> g_midiManager;
 
-// UI Interaction State
-struct UIState {
-    float mouseX = 0;
-    float mouseY = 0;
-    bool mouseDown = false;
-    bool mouseClicked = false;
+// --- THEME CONSTANTS ---
+const ImU32 COL_BG_DARK       = IM_COL32(20, 20, 22, 255);
+const ImU32 COL_PANEL_BG      = IM_COL32(30, 32, 35, 255);
+const ImU32 COL_PANEL_HEADER  = IM_COL32(40, 44, 48, 255);
+const ImU32 COL_BORDER        = IM_COL32(60, 60, 65, 255);
+const ImU32 COL_ACCENT        = IM_COL32(0, 225, 255, 255); // Neon Cyan
+const ImU32 COL_ACCENT_DIM    = IM_COL32(0, 100, 120, 255);
+const ImU32 COL_TEXT_LIGHT    = IM_COL32(220, 220, 220, 255);
+const ImU32 COL_TEXT_DIM      = IM_COL32(140, 140, 140, 255);
+const ImU32 COL_KEY_WHITE     = IM_COL32(200, 200, 200, 255);
+const ImU32 COL_KEY_BLACK     = IM_COL32(10, 10, 10, 255);
+const ImU32 COL_KEY_ACTIVE    = COL_ACCENT;
+
+// --- WIDGETS ---
+
+// Knob style
+// A ring with a value indicator.
+bool Knob(const char* label, float* p_value, float v_min, float v_max, const char* format = "%.2f") {
+    ImGuiIO& io = ImGui::GetIO();
+    ImGuiStyle& style = ImGui::GetStyle();
+
+    float radius = 22.0f;
+    float thickness = 4.0f;
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImVec2 center = ImVec2(pos.x + radius, pos.y + radius);
+    float line_height = ImGui::GetTextLineHeight();
     
-    // Knob Dragging
-    int activeKnobId = -1;
-    float dragStartY = 0;
-    float dragStartValue = 0;
-    
-    // Keyboard
-    int activeNote = -1; // -1 if none
-};
-UIState g_uiState;
+    // Layout
+    ImGui::InvisibleButton(label, ImVec2(radius * 2, radius * 2 + line_height + 5));
+    bool is_active = ImGui::IsItemActive();
+    bool is_hovered = ImGui::IsItemHovered();
+    bool value_changed = false;
 
-// Colors
-const vector_float4 kColorPanel = {0.2f, 0.2f, 0.25f, 1.0f};
-const vector_float4 kColorKnobBody = {0.1f, 0.1f, 0.1f, 1.0f};
-const vector_float4 kColorKnobLine = {0.9f, 0.9f, 0.9f, 1.0f};
-const vector_float4 kColorText = {0.8f, 0.8f, 0.8f, 1.0f}; // We don't have text rendering yet, using colored boxes for labels? No, let's just use layout.
-
-@interface AppViewController : NSViewController <MTKViewDelegate>
-@property (nonatomic, strong) MTKView *mtkView;
-@property (nonatomic, strong) id <MTLDevice> device;
-@property (nonatomic, strong) id <MTLCommandQueue> commandQueue;
-@property (nonatomic, assign) Renderer* renderer;
-@end
-
-@implementation AppViewController
-
-- (instancetype)initWithNibName:(NSNibName)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil {
-    self = [super initWithNibName:nibNameOrNil bundle:nibBundleOrNil];
-    if (self) {
-        self.device = MTLCreateSystemDefaultDevice();
-        self.commandQueue = [self.device newCommandQueue];
-        self.renderer = new Renderer(self.device);
+    // Input
+    if (is_active && io.MouseDelta.y != 0.0f) {
+        float step = (v_max - v_min) / 200.0f;
+        *p_value -= io.MouseDelta.y * step;
+        if (*p_value < v_min) *p_value = v_min;
+        if (*p_value > v_max) *p_value = v_max;
+        value_changed = true;
     }
-    return self;
-}
 
-- (void)dealloc {
-    delete self.renderer;
-}
-
-- (void)loadView {
-    self.view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
-    self.mtkView = [[MTKView alloc] initWithFrame:self.view.bounds device:self.device];
-    self.mtkView.delegate = self;
-    self.mtkView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    [self.view addSubview:self.mtkView];
+    // Draw
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
     
-    // Mouse Tracking
-    NSTrackingArea* trackingArea = [[NSTrackingArea alloc] initWithRect:self.view.bounds
-                                                                options:NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
-                                                                  owner:self
-                                                               userInfo:nil];
-    [self.view addTrackingArea:trackingArea];
-}
+    // Angles
+    float angle_min = 3.141592f * 0.75f;
+    float angle_max = 3.141592f * 2.25f;
+    float t = (*p_value - v_min) / (v_max - v_min);
+    float angle = angle_min + (angle_max - angle_min) * t;
 
-- (void)mouseDown:(NSEvent *)event {
-    NSPoint p = [self.view convertPoint:event.locationInWindow fromView:nil];
-    g_uiState.mouseX = p.x;
-    g_uiState.mouseY = self.view.bounds.size.height - p.y; // Flip Y
-    g_uiState.mouseDown = true;
-    g_uiState.mouseClicked = true;
-}
+    // Background Ring
+    draw_list->PathArcTo(center, radius - thickness/2, angle_min, angle_max, 32);
+    draw_list->PathStroke(IM_COL32(50, 50, 55, 255), 0, thickness);
 
-- (void)mouseDragged:(NSEvent *)event {
-    NSPoint p = [self.view convertPoint:event.locationInWindow fromView:nil];
-    g_uiState.mouseX = p.x;
-    g_uiState.mouseY = self.view.bounds.size.height - p.y;
-}
-
-- (void)mouseUp:(NSEvent *)event {
-    g_uiState.mouseDown = false;
-    g_uiState.activeKnobId = -1;
-    
-    // Release keyboard note if active
-    if (g_uiState.activeNote != -1) {
-        g_AudioEngine->getSynth().noteOff(g_uiState.activeNote);
-        g_uiState.activeNote = -1;
+    // Active Ring
+    if (t > 0.0f) {
+        draw_list->PathArcTo(center, radius - thickness/2, angle_min, angle, 32);
+        draw_list->PathStroke(is_active ? COL_ACCENT : COL_ACCENT_DIM, 0, thickness);
     }
+
+    // Value/Label Text
+    // Draw Value inside
+    char val_buf[32];
+    sprintf(val_buf, format, *p_value);
+    ImVec2 val_size = ImGui::CalcTextSize(val_buf);
+    // draw_list->AddText(ImVec2(center.x - val_size.x * 0.5f, center.y - val_size.y * 0.5f), COL_TEXT_LIGHT, val_buf);
+    
+    // Draw Label below
+    ImVec2 text_size = ImGui::CalcTextSize(label);
+    draw_list->AddText(ImVec2(center.x - text_size.x * 0.5f, pos.y + radius * 2 + 2), COL_TEXT_DIM, label);
+
+    return value_changed;
 }
 
-- (void)mouseMoved:(NSEvent *)event {
-    NSPoint p = [self.view convertPoint:event.locationInWindow fromView:nil];
-    g_uiState.mouseX = p.x;
-    g_uiState.mouseY = self.view.bounds.size.height - p.y;
-}
+// Waveform Visualizer
+void WaveformVisualizer(const std::vector<float>& buffer, float width, float height) {
+    ImGui::BeginChild("Waveform", ImVec2(width, height), false);
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    
+    // Background
+    draw_list->AddRectFilled(p, ImVec2(p.x + width, p.y + height), IM_COL32(10, 12, 14, 255));
+    draw_list->AddRect(p, ImVec2(p.x + width, p.y + height), COL_BORDER);
+    
+    // Grid
+    draw_list->AddLine(ImVec2(p.x, p.y + height/2), ImVec2(p.x + width, p.y + height/2), IM_COL32(40, 40, 40, 255));
 
-// -----------------------------------------------------------------------------
-// UI WIDGETS
-// -----------------------------------------------------------------------------
-
-bool DrawKnob(Renderer* r, int id, float x, float y, float radius, float* value, float minV, float maxV) {
-    bool changed = false;
-    
-    // Interaction
-    float dx = g_uiState.mouseX - x;
-    float dy = g_uiState.mouseY - y;
-    float dist = sqrtf(dx*dx + dy*dy);
-    
-    if (g_uiState.mouseDown && g_uiState.activeKnobId == -1 && dist < radius) {
-        g_uiState.activeKnobId = id;
-        g_uiState.dragStartY = g_uiState.mouseY;
-        g_uiState.dragStartValue = *value;
-    }
-    
-    if (g_uiState.activeKnobId == id) {
-        float dragDy = g_uiState.dragStartY - g_uiState.mouseY;
-        float range = maxV - minV;
-        float sensitivity = 0.005f * (g_uiState.activeKnobId == id ? 1.0f : 0.0f); // sensitivity
-        // Actually, let's map pixels to range
-        float change = dragDy * (range / 200.0f); // 200 pixels = full range
-        *value = std::max(minV, std::min(maxV, g_uiState.dragStartValue + change));
-        changed = true;
-    }
-    
-    // Render
-    r->drawCircle(x, y, radius, kColorKnobBody);
-    
-    // Indicator Line
-    float normalized = (*value - minV) / (maxV - minV); // 0..1
-    float angle = (0.75f + normalized * 0.75f) * 2.0f * M_PI; // Start at 270 deg (bottom) ??? No.
-    // Standard synth knob: 7 o'clock to 5 o'clock
-    // 0 = 225 deg (5PI/4), 1 = -45 deg (-PI/4)
-    float startAngle = 3.0f * M_PI / 4.0f; // 135 deg?
-    float endAngle = 9.0f * M_PI / 4.0f;
-    // Let's say 0..1 maps to angleMin..angleMax
-    float angleMin = M_PI * 0.75f; // Bottom left
-    float angleMax = M_PI * 2.25f; // Bottom right
-    
-    float currentAngle = angleMin + normalized * (angleMax - angleMin);
-    
-    float lx = x + radius * 0.8f * cosf(currentAngle);
-    float ly = y + radius * 0.8f * sinf(currentAngle); // Correct Y direction?
-    // In our coord system (0 top), Y increases down.
-    // cos/sin standard math assumes Y up.
-    // So actually:
-    // angle 0 = Right. angle PI/2 = Down.
-    // We want 0 value = Bottom Left. That is roughly 135 deg (3PI/4).
-    
-    // Let's re-calc math
-    lx = x + radius * 0.8f * cosf(currentAngle);
-    ly = y + radius * 0.8f * sinf(currentAngle);
-
-    r->drawLine(x, y, lx, ly, 3.0f, kColorKnobLine);
-    
-    return changed;
-}
-
-void DrawKeyboard(Renderer* r, float x, float y, float w, float h) {
-    int startNote = 48; // C3
-    int numKeys = 14; // C3 to C4+
-    float keyWidth = w / numKeys;
-    
-    // White Keys
-    for (int i = 0; i < numKeys; ++i) {
-        float kx = x + i * keyWidth;
-        vector_float4 color = {0.9f, 0.9f, 0.9f, 1.0f};
+    // Waveform
+    if (!buffer.empty()) {
+        float scale_x = width / (float)buffer.size();
+        float scale_y = height / 2.0f; // Amplitude scaling
         
-        // Interaction
-        if (g_uiState.mouseDown && 
-            g_uiState.mouseX >= kx && g_uiState.mouseX < kx + keyWidth &&
-            g_uiState.mouseY >= y && g_uiState.mouseY < y + h) {
+        for (size_t i = 0; i < buffer.size() - 1; ++i) {
+            float x1 = p.x + i * scale_x;
+            float y1 = p.y + height/2 - buffer[i] * scale_y;
+            float x2 = p.x + (i+1) * scale_x;
+            float y2 = p.y + height/2 - buffer[i+1] * scale_y;
             
-            color = {0.7f, 0.7f, 0.7f, 1.0f}; // Pressed
-            
-            // Map index to note (White keys only logic for simplicity first, then add black)
-            // C, D, E, F, G, A, B
-            int octave = i / 7;
-            int noteInOctave = i % 7;
-            int semitoneOffsets[] = {0, 2, 4, 5, 7, 9, 11};
-            int note = startNote + octave * 12 + semitoneOffsets[noteInOctave];
-            
-            if (g_uiState.activeNote != note) {
-                if (g_uiState.activeNote != -1) g_AudioEngine->getSynth().noteOff(g_uiState.activeNote);
-                g_AudioEngine->getSynth().noteOn(note, 100);
-                g_uiState.activeNote = note;
-            }
+            // Clip to box
+            if (y1 < p.y) y1 = p.y; if (y1 > p.y + height) y1 = p.y + height;
+            if (y2 < p.y) y2 = p.y; if (y2 > p.y + height) y2 = p.y + height;
+
+            draw_list->AddLine(ImVec2(x1, y1), ImVec2(x2, y2), COL_ACCENT, 1.5f);
+        }
+    }
+    
+    ImGui::EndChild();
+}
+
+// Envelope Graph (ADSR Visualizer)
+void EnvelopeGraph(float a, float d, float s, float r, float width, float height) {
+    ImGui::BeginChild("EnvGraph", ImVec2(width, height), false);
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    
+    // Background
+    draw_list->AddRectFilled(p, ImVec2(p.x + width, p.y + height), IM_COL32(10, 12, 14, 255));
+    draw_list->AddRect(p, ImVec2(p.x + width, p.y + height), COL_BORDER);
+
+    // Calculate Points
+    // Normalize total time to width (arbitrary scaling)
+    float total_w = width * 0.9f;
+    float h = height * 0.8f;
+    float base_y = p.y + height - 5;
+    
+    // A, D, R are times. S is level.
+    // Assume max time displayed is 2.0s? simpler: just proportional
+    float total_time = a + d + r + 0.5f; // +0.5 for hold/sustain view
+    float scale_x = total_w / total_time;
+    if (scale_x > total_w / 0.5f) scale_x = total_w / 0.5f; // limit max width
+
+    float x_start = p.x + 5;
+    ImVec2 pt_start(x_start, base_y);
+    ImVec2 pt_attack(x_start + a * scale_x, base_y - h);
+    ImVec2 pt_decay(pt_attack.x + d * scale_x, base_y - h * s);
+    ImVec2 pt_sustain(pt_decay.x + 0.3f * scale_x, base_y - h * s); // Sustain hold
+    ImVec2 pt_release(pt_sustain.x + r * scale_x, base_y);
+
+    // Draw Lines
+    draw_list->AddLine(pt_start, pt_attack, COL_ACCENT, 2.0f);
+    draw_list->AddLine(pt_attack, pt_decay, COL_ACCENT, 2.0f);
+    draw_list->AddLine(pt_decay, pt_sustain, COL_ACCENT, 2.0f);
+    draw_list->AddLine(pt_sustain, pt_release, COL_ACCENT, 2.0f);
+    
+    // Fill
+    // (Optional: transparent fill)
+    
+    ImGui::EndChild();
+}
+
+// Piano (re-used but styled)
+static int g_lastNote = -1;
+void PianoKeyboard(AudioEngine* audio, float width, float height) {
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    
+    int startOctave = 3;
+    int octaves = 2;
+    int numWhiteKeys = octaves * 7;
+    float whiteKeyWidth = width / numWhiteKeys;
+    float blackKeyWidth = whiteKeyWidth * 0.6f;
+    float blackKeyHeight = height * 0.6f;
+    
+    ImGui::InvisibleButton("keyboard", ImVec2(width, height));
+    bool is_active = ImGui::IsItemActive();
+    ImVec2 mouse_pos = ImGui::GetMousePos();
+    int hoveredNote = -1;
+
+    // Draw White
+    for (int i = 0; i < numWhiteKeys; ++i) {
+        float x = p.x + i * whiteKeyWidth;
+        int octave = startOctave + (i / 7);
+        int noteInOctave = i % 7;
+        const int map[] = {0, 2, 4, 5, 7, 9, 11};
+        int midiNote = 12 * (octave + 1) + map[noteInOctave];
+        
+        if (ImGui::IsItemHovered() && mouse_pos.x >= x && mouse_pos.x < x + whiteKeyWidth && mouse_pos.y >= p.y && mouse_pos.y < p.y + height) {
+            hoveredNote = midiNote;
         }
         
-        r->drawRect(kx + 1, y, keyWidth - 2, h, color);
+        ImU32 col = (hoveredNote == midiNote && is_active) ? COL_KEY_ACTIVE : COL_KEY_WHITE;
+        draw_list->AddRectFilled(ImVec2(x, p.y), ImVec2(x + whiteKeyWidth - 1, p.y + height), col);
     }
     
-    // Black keys would go on top... omitting for bare metal simplicity for now or add them?
-    // Let's add them for "Analog" feel.
-    // C# D# F# G# A#
-    // Indices: 0, 1, 3, 4, 5 (relative to C)
-    // Position: between white keys.
+    // Draw Black
+    for (int i = 0; i < numWhiteKeys; ++i) {
+        int noteInOctave = i % 7;
+        if (noteInOctave == 2 || noteInOctave == 6) continue;
+        
+        float x = p.x + i * whiteKeyWidth + (whiteKeyWidth * 0.7f);
+        int octave = startOctave + (i / 7);
+        const int map[] = {0, 2, 4, 5, 7, 9, 11};
+        int midiNote = 12 * (octave + 1) + map[noteInOctave] + 1;
+        
+        if (ImGui::IsItemHovered() && mouse_pos.x >= x && mouse_pos.x < x + blackKeyWidth && mouse_pos.y >= p.y && mouse_pos.y < p.y + blackKeyHeight) {
+            hoveredNote = midiNote; // Override
+        }
+        
+        ImU32 col = (hoveredNote == midiNote && is_active) ? COL_KEY_ACTIVE : COL_KEY_BLACK;
+        draw_list->AddRectFilled(ImVec2(x, p.y), ImVec2(x + blackKeyWidth, p.y + blackKeyHeight), col);
+    }
+    
+    // Trigger
+    if (is_active && hoveredNote != -1) {
+        if (hoveredNote != g_lastNote) {
+            if (g_lastNote != -1) audio->noteOff(g_lastNote);
+            audio->noteOn(hoveredNote, 127);
+            g_lastNote = hoveredNote;
+        }
+    } else if (g_lastNote != -1) {
+        audio->noteOff(g_lastNote);
+        g_lastNote = -1;
+    }
 }
 
 
-- (void)drawInMTKView:(MTKView *)view {
-    MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
-    if (rpd == nil) return;
-    
-    rpd.colorAttachments[0].clearColor = MTLClearColorMake(0.15, 0.15, 0.2, 1); // Dark background
-    
-    id <MTLCommandBuffer> commandBuffer = [self.commandQueue commandBuffer];
-    self.renderer->setScreenSize(view.bounds.size.width, view.bounds.size.height);
-    self.renderer->beginFrame(commandBuffer, rpd);
+void init(void) {
+    sg_desc desc = {};
+    desc.environment = sglue_environment();
+    sg_setup(&desc);
 
-    // ---------------------------------------------------------
-    // Draw Panel
-    // ---------------------------------------------------------
-    self.renderer->drawRect(20, 20, 760, 400, kColorPanel);
-    
-    // Knobs Row 1: Filter
-    // ID 1: Cutoff
-    if (DrawKnob(self.renderer, 1, 100, 100, 30, &p_cutoff, 20.0f, 10000.0f)) {
-        g_AudioEngine->getSynth().setFilterCutoff(p_cutoff);
-    }
-    // ID 2: Resonance
-    if (DrawKnob(self.renderer, 2, 200, 100, 30, &p_resonance, 0.0f, 0.95f)) {
-        g_AudioEngine->getSynth().setFilterResonance(p_resonance);
-    }
-    
-    // Knobs Row 2: ADSR
-    float adsrY = 250.0f;
-    if (DrawKnob(self.renderer, 3, 100, adsrY, 25, &p_attack, 0.001f, 2.0f)) g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
-    if (DrawKnob(self.renderer, 4, 180, adsrY, 25, &p_decay, 0.001f, 2.0f)) g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
-    if (DrawKnob(self.renderer, 5, 260, adsrY, 25, &p_sustain, 0.0f, 1.0f)) g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
-    if (DrawKnob(self.renderer, 6, 340, adsrY, 25, &p_release, 0.001f, 5.0f)) g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
-    
-    // Waveform Selector (Simple toggle knob for now)
-    float waveFloat = (float)p_waveform;
-    if (DrawKnob(self.renderer, 7, 500, 100, 40, &waveFloat, 0.0f, 3.0f)) {
-        p_waveform = (int)roundf(waveFloat);
-        g_AudioEngine->getSynth().setWaveform(p_waveform);
-    }
+    simgui_desc_t simgui_desc = {};
+    simgui_setup(&simgui_desc);
 
-    // ---------------------------------------------------------
-    // Draw Keyboard
-    // ---------------------------------------------------------
-    DrawKeyboard(self.renderer, 20, 450, 760, 120);
-
-    // ---------------------------------------------------------
-    // End Frame
-    // ---------------------------------------------------------
-    self.renderer->endFrame();
-    [commandBuffer presentDrawable:view.currentDrawable];
-    [commandBuffer commit];
+    g_audioEngine = std::make_shared<AudioEngine>();
+    g_audioEngine->initialize();
     
-    // Reset one-shot clicks
-    g_uiState.mouseClicked = false;
+    g_midiManager = std::make_shared<MidiManager>(*g_audioEngine->getSynthEngine());
+    g_midiManager->initialize();
+
+    state.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
+    state.pass_action.colors[0].clear_value = { 0.1f, 0.1f, 0.12f, 1.0f }; // Dark Blue/Grey
+    
+    // Theme
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowPadding = ImVec2(0,0);
+    style.WindowRounding = 0.0f;
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(20.0f/255.0f, 20.0f/255.0f, 22.0f/255.0f, 1.0f);
+    style.Colors[ImGuiCol_Text] = ImVec4(0.9f, 0.9f, 0.9f, 1.0f);
 }
 
-- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {}
-
-@end
-
-@interface AppDelegate : NSObject <NSApplicationDelegate>
-@property (nonatomic, strong) NSWindow *window;
-@property (nonatomic, strong) AppViewController *viewController;
-@end
-
-@implementation AppDelegate
-
-- (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-    g_AudioEngine = new AudioEngine();
-    g_MidiManager = new MidiManager(g_AudioEngine->getSynth());
+void frame(void) {
+    const int width = sapp_width();
+    const int height = sapp_height();
     
-    g_AudioEngine->start();
-    g_MidiManager->initialize();
+    // UI State variables (preserved across frames)
+    static float masterVol = 0.5f;
+    static int wave = 2; // SAW
+    static float detune = 0.0f;
+    static float blend = 1.0f;
+    static float cutoff = 2000.0f;
+    static float res = 0.5f;
+    static float a = 0.05f, d = 0.2f, s = 0.5f, r = 0.5f;
+    static bool firstRun = true;
+
+    simgui_new_frame({ width, height, sapp_frame_duration(), sapp_dpi_scale() });
     
-    // Set initial synth state
-    g_AudioEngine->getSynth().setFilterCutoff(p_cutoff);
-    g_AudioEngine->getSynth().setFilterResonance(p_resonance);
-    g_AudioEngine->getSynth().setEnvelopeParams(p_attack, p_decay, p_sustain, p_release);
-    g_AudioEngine->getSynth().setWaveform(p_waveform);
+    auto* synth = g_audioEngine->getSynthEngine();
 
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(100, 100, 800, 600)
-                                              styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
-                                                backing:NSBackingStoreBuffered
-                                                  defer:NO];
-    [self.window setTitle:@"Rx Bare Metal Synth (Analog Edition)"];
-    self.viewController = [[AppViewController alloc] initWithNibName:nil bundle:nil];
-    self.window.contentViewController = self.viewController;
-    [self.window makeKeyAndOrderFront:nil];
-}
-
-- (void)applicationWillTerminate:(NSNotification *)aNotification {
-    g_AudioEngine->stop();
-    delete g_MidiManager;
-    delete g_AudioEngine;
-}
-
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)sender {
-    return YES;
-}
-
-@end
-
-int main(int argc, const char * argv[]) {
-    @autoreleasepool {
-        NSApplication *app = [NSApplication sharedApplication];
-        AppDelegate *delegate = [[AppDelegate alloc] init];
-        [app setDelegate:delegate];
-        [app setActivationPolicy:NSApplicationActivationPolicyRegular];
-        [app run];
+    // Sync engine on first run
+    if (firstRun) {
+        synth->setWaveform(wave);
+        synth->setFilterCutoff(cutoff);
+        synth->setFilterResonance(res);
+        synth->setEnvelopeParams(a, d, s, r);
+        synth->setMasterVolume(masterVol);
+        firstRun = false;
     }
-    return 0;
+
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImVec2(width, height));
+    ImGui::Begin("BareMetalSynthLite", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoBringToFrontOnFocus);
+
+    // HEADER
+    {
+        ImGui::BeginChild("Header", ImVec2(width, 40), false);
+        ImGui::SameLine(10);
+        ImGui::TextColored(ImVec4(0, 0.8f, 1.0f, 1.0f), "BARE METAL SYNTH"); 
+        ImGui::SameLine(); ImGui::Text("LITE");
+        
+        ImGui::SameLine(width - 150);
+        ImGui::SetNextItemWidth(100);
+        if (ImGui::SliderFloat("##Master", &masterVol, 0.0f, 1.0f, "Vol %.2f")) {
+            synth->setMasterVolume(masterVol);
+        }
+        ImGui::EndChild();
+    }
+    
+    // MAIN AREA (2 Columns: OSC | FILTER)
+    float colWidth = width / 2.0f - 10;
+    
+    // OSCILLATOR
+    ImGui::SetCursorPos(ImVec2(5, 45));
+    ImGui::BeginChild("OscA", ImVec2(colWidth, 250), true);
+    {
+        ImGui::TextColored(ImVec4(0, 1, 1, 1), "OSCILLATOR A");
+        ImGui::Separator();
+        
+        // Visualizer
+        static std::vector<float> scopeData;
+        g_audioEngine->getScopeBuffer().getSnapshot(scopeData, 512);
+        WaveformVisualizer(scopeData, colWidth - 20, 120);
+        
+        ImGui::Dummy(ImVec2(0, 10));
+        
+        // Controls
+        ImGui::Columns(3, "OscCols", false);
+        const char* waves[] = { "SINE", "SQU", "SAW", "TRI" };
+        ImGui::SetNextItemWidth(70);
+        if (ImGui::Combo("##Wave", &wave, waves, IM_ARRAYSIZE(waves))) {
+            synth->setWaveform(wave);
+        }
+        ImGui::Text("WAVE");
+        
+        ImGui::NextColumn();
+        Knob("DETUNE", &detune, 0.0f, 1.0f);
+        
+        ImGui::NextColumn();
+        Knob("LEVEL", &blend, 0.0f, 1.0f);
+        ImGui::Columns(1);
+    }
+    ImGui::EndChild();
+    
+    // FILTER
+    ImGui::SetCursorPos(ImVec2(15 + colWidth, 45));
+    ImGui::BeginChild("Filter", ImVec2(colWidth, 250), true);
+    {
+        ImGui::TextColored(ImVec4(0, 1, 1, 1), "FILTER");
+        ImGui::Separator();
+        
+        // Fake Response Graph
+        ImGui::BeginChild("FilterGraph", ImVec2(colWidth - 20, 120), true);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(p, ImVec2(p.x + colWidth - 20, p.y + 120), IM_COL32(10, 12, 14, 255));
+        
+        float x_cutoff = (log10f(cutoff) - log10f(20.0f)) / (log10f(20000.0f) - log10f(20.0f)) * (colWidth - 20);
+        dl->AddLine(ImVec2(p.x, p.y + 60), ImVec2(p.x + x_cutoff, p.y + 60), COL_ACCENT, 2.0f);
+        dl->AddLine(ImVec2(p.x + x_cutoff, p.y + 60), ImVec2(p.x + colWidth - 20, p.y + 120), COL_ACCENT, 2.0f);
+        ImGui::EndChild();
+        
+        ImGui::Dummy(ImVec2(0, 10));
+        
+        ImGui::Columns(2, "FiltCols", false);
+        if (Knob("CUTOFF", &cutoff, 20.0f, 20000.0f, "%.0f Hz")) {
+            synth->setFilterCutoff(cutoff);
+        }
+        ImGui::NextColumn();
+        if (Knob("RES", &res, 0.0f, 1.0f)) {
+            synth->setFilterResonance(res);
+        }
+        ImGui::Columns(1);
+    }
+    ImGui::EndChild();
+    
+    // ENVELOPES
+    ImGui::SetCursorPos(ImVec2(5, 305));
+    ImGui::BeginChild("Env", ImVec2(width - 10, 170), true);
+    {
+        ImGui::TextColored(ImVec4(0, 1, 1, 1), "ENVELOPE 1");
+        ImGui::SameLine(100);
+        ImGui::TextDisabled("ENV 2");
+        ImGui::SameLine(180);
+        ImGui::TextDisabled("ENV 3");
+        ImGui::Separator();
+        
+        ImGui::Columns(2, "EnvLayout", false);
+        ImGui::SetColumnWidth(0, 200);
+        
+        // Graph
+        EnvelopeGraph(a, d, s, r, 180, 80);
+        
+        ImGui::NextColumn();
+        
+        // Knobs
+        ImGui::Columns(4, "EnvKnobs", false);
+        bool envChanged = false;
+        if (Knob("ATT", &a, 0.01f, 2.0f)) envChanged = true; ImGui::NextColumn();
+        if (Knob("DEC", &d, 0.01f, 2.0f)) envChanged = true; ImGui::NextColumn();
+        if (Knob("SUS", &s, 0.0f, 1.0f))  envChanged = true; ImGui::NextColumn();
+        if (Knob("REL", &r, 0.01f, 5.0f)) envChanged = true;
+        
+        if (envChanged) {
+            synth->setEnvelopeParams(a, d, s, r);
+        }
+
+        ImGui::Columns(1);
+    }
+    ImGui::EndChild();
+    
+    // PIANO FOOTER
+    ImGui::SetCursorPos(ImVec2(0, height - 60));
+    PianoKeyboard(g_audioEngine.get(), width, 60);
+
+    ImGui::End();
+
+    sg_pass pass = {};
+    pass.action = state.pass_action;
+    pass.swapchain = sglue_swapchain();
+    sg_begin_pass(&pass);
+    simgui_render();
+    sg_end_pass();
+    sg_commit();
+}
+
+void cleanup(void) {
+    simgui_shutdown();
+    sg_shutdown();
+    g_audioEngine->teardown();
+}
+
+void event(const sapp_event* ev) {
+    simgui_handle_event(ev);
+}
+
+sapp_desc sokol_main(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    sapp_desc desc = {};
+    desc.init_cb = init;
+    desc.frame_cb = frame;
+    desc.cleanup_cb = cleanup;
+    desc.event_cb = event;
+    desc.width = 900;
+    desc.height = 600;
+    desc.window_title = "Bare Metal Synth | Lite";
+    desc.icon.sokol_default = true;
+    return desc;
 }

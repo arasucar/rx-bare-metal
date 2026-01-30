@@ -3,6 +3,7 @@
 #include "SynthEngine.hpp"
 #include "ScopeBuffer.hpp"
 #include "dsp/DspBuffer.hpp"
+#include <memory>
 
 class AudioEngine {
 public:
@@ -11,6 +12,16 @@ public:
     bool start();
     void stop();
     
+    // API aliases for compatibility with main.mm
+    void initialize() { start(); }
+    void teardown() { stop(); }
+    
+    SynthEngine* getSynthEngine() { return &synth; }
+    
+    void noteOn(int note, int velocity) { synth.noteOn(note, velocity); }
+    void noteOff(int note) { synth.noteOff(note); }
+    void setMasterVolume(float vol) { synth.setMasterVolume(vol); }
+
     SynthEngine& getSynth() { return synth; }
     ScopeBuffer& getScopeBuffer() { return scopeBuffer; }
 

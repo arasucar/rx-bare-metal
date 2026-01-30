@@ -8,11 +8,11 @@ public:
     ~MidiManager();
     
     bool initialize();
-
+    
 private:
-    SynthEngine& synth;
     MIDIClientRef midiClient;
     MIDIPortRef inputPort;
+    SynthEngine& synth;
     
     static void MidiCallback(const MIDIPacketList *pktlist, void *readProcRefCon, void *srcRefCon);
     void handleMidiMessage(const uint8_t* data, size_t length);

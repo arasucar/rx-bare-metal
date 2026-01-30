@@ -21,8 +21,10 @@ public:
     void setFilterResonance(float res);
     void setEnvelopeParams(float a, float d, float s, float r);
     void setWaveform(int waveformIndex); // 0=Sine, 1=Tri, 2=Saw, 3=Square
+    void setMasterVolume(float vol) { masterVolume = vol; }
 
 private:
     static const int MAX_VOICES = 8;
     Voice voices[MAX_VOICES];
+    float masterVolume = 0.2f;
 };
