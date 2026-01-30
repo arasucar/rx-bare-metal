@@ -1,0 +1,32 @@
+# OS Specific
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+# Build Artifacts
+bin/
+build/
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Libraries (downloaded during build)
+lib/
+vendor/
+
+# IDE - VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+*.code-workspace
+
+# Temporary / Logs
+*.log
+output.log
+tmp/
